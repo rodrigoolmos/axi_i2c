@@ -1,9 +1,6 @@
 // MODES
 // Standard-mode (100 kHz)
-// Fast-mode (400 kHz)
-// Fast-mode Plus (1 MHz)
 // 7 bit addressing
-// Clock stretching
 // START / Repeated START
 
 
@@ -16,12 +13,11 @@ module i2c_physical #(
     // Control signals
     input  logic        ena,
     output logic        new_byte,       // Indicates a new byte is ready to be transmitted or received
-    input  logic [1:0]  i2c_mode,       // Indicates the current mode of operation
     output logic        system_idle,    // Indicates the system is idle
     input  logic [7:0]  addr_rw,        // Address/Read-Write control (7-bit address + R/W bit) read 1, write 0
     input  logic [7:0]  data_in,        // Data to be transmitted
     output logic [7:0]  data_out,       // Received data
-    output logic        error_ack,       // Indicates an error acknowledgment
+    output logic        error_ack,      // Indicates an error acknowledgment
 
     // i2c signals
     inout logic        i2c_scl,
@@ -34,278 +30,275 @@ module i2c_physical #(
     parameter unsigned CNT_HIGH_100K = (CLOCK_FREQ_HZ * 64'd40) / 64'd10_000_000; // 4.0 us
     parameter unsigned CNT_MAX_100K = CNT_LOW_100K + CNT_HIGH_100K;       // 8.7 us
 
-    // parameter unsigned CNT_THD_STA_100K = (CLOCK_FREQ_HZ * 64'd40) / 64'd10_000_000; // 4.0 us  (tHD;STA)
-    // parameter unsigned CNT_TSU_STA_100K = (CLOCK_FREQ_HZ * 64'd47) / 64'd10_000_000; // 4.7 us  (tSU;STA)
-    // parameter unsigned CNT_TSU_STO_100K = (CLOCK_FREQ_HZ * 64'd40) / 64'd10_000_000; // 4.0 us  (tSU;STO)
-    // parameter unsigned CNT_TBUF_100K    = (CLOCK_FREQ_HZ * 64'd47) / 64'd10_000_000; // 4.7 us  (tBUF)
+    parameter unsigned CNT_THD_STA_100K = (CLOCK_FREQ_HZ * 64'd40) / 64'd10_000_000; // 4.0 us  (tHD;STA)
+    parameter unsigned CNT_TSU_STA_100K = (CLOCK_FREQ_HZ * 64'd47) / 64'd10_000_000; // 4.7 us  (tSU;STA)
+    parameter unsigned CNT_TSU_STO_100K = (CLOCK_FREQ_HZ * 64'd40) / 64'd10_000_000; // 4.0 us  (tSU;STO)
+    parameter unsigned CNT_TBUF_100K    = (CLOCK_FREQ_HZ * 64'd47) / 64'd10_000_000; // 4.7 us  (tBUF)
+    parameter unsigned CNT_THD_TSU_STA_100K = CNT_THD_STA_100K + CNT_TSU_STA_100K; // 8.7 us
+    parameter unsigned CNT_THD_TSU_TBUF_100K = CNT_TSU_STO_100K + CNT_TBUF_100K; // 8.7 us
     
-    // =====================
-    // Fast-mode (400 kHz)
-    // =====================
-    parameter unsigned CNT_LOW_400K  = (CLOCK_FREQ_HZ * 64'd13) / 64'd10_000_000; // 1.3 us
-    parameter unsigned CNT_HIGH_400K = (CLOCK_FREQ_HZ * 64'd6)  / 64'd10_000_000; // 0.6 us
-    parameter unsigned CNT_MAX_400K = CNT_LOW_400K + CNT_HIGH_400K;       // 1.9 us
+    parameter unsigned CNT_W = $clog2(CNT_MAX_100K + 1);
 
-    // parameter unsigned CNT_THD_STA_400K = (CLOCK_FREQ_HZ * 64'd6)  / 64'd10_000_000; // 0.6 us  (tHD;STA)
-    // parameter unsigned CNT_TSU_STA_400K = (CLOCK_FREQ_HZ * 64'd6)  / 64'd10_000_000; // 0.6 us  (tSU;STA)
-    // parameter unsigned CNT_TSU_STO_400K = (CLOCK_FREQ_HZ * 64'd6)  / 64'd10_000_000; // 0.6 us  (tSU;STO)
-    // parameter unsigned CNT_TBUF_400K    = (CLOCK_FREQ_HZ * 64'd13) / 64'd10_000_000; // 1.3 us  (tBUF)
-
-    // ==========================
-    // Fast-mode Plus (1 MHz)
-    // ==========================
-    parameter unsigned CNT_LOW_1M  = (CLOCK_FREQ_HZ * 64'd5)  / 64'd10_000_000;  // 0.5 us
-    parameter unsigned CNT_HIGH_1M = (CLOCK_FREQ_HZ * 64'd26) / 64'd100_000_000; // 0.26 us
-    parameter unsigned CNT_MAX_1M = CNT_LOW_1M + CNT_HIGH_1M;            // 0.76 us
-
-    // parameter unsigned CNT_THD_STA_1M = (CLOCK_FREQ_HZ * 64'd26) / 64'd100_000_000; // 0.26 us (tHD;STA)
-    // parameter unsigned CNT_TSU_STA_1M = (CLOCK_FREQ_HZ * 64'd26) / 64'd100_000_000; // 0.26 us (tSU;STA)
-    // parameter unsigned CNT_TSU_STO_1M = (CLOCK_FREQ_HZ * 64'd26) / 64'd100_000_000; // 0.26 us (tSU;STO)
-    // parameter unsigned CNT_TBUF_1M    = (CLOCK_FREQ_HZ * 64'd5)  / 64'd10_000_000;  // 0.5 us  (tBUF)
-
-    localparam int unsigned DIV_W = $clog2(CLOCK_FREQ_HZ/10 + 2);
-
-    logic [DIV_W-1:0] CNT_LOW;
-    logic [DIV_W-1:0] CNT_HIGH;
-    logic [DIV_W-1:0] CNT_MAX;
-
-    logic [DIV_W-1:0] i2c_timing_cnt;
-    logic ena_i2c_clk;
-    logic reset_i2c_clk;
-    logic end_i2c_clk;
-    logic end_low_i2c_clk;
-    logic end_high_i2c_clk;
-
-    logic        i2c_scl_reg;
-    logic        i2c_sda_reg;
-    logic        error_ack_reg;
-    logic [7:0]  data_in_reg;
-    logic [7:0]  data_out_reg;
-    logic [7:0]  addr_rw_reg;
-
-    logic [2:0]  bit_cnt;
-
-    // State machine states
     typedef enum logic [3:0] {
         IDLE,
         START,
-        SEND_ADDR_RW,
+        ADDR,
+        R_W,
         ADDR_ACK,
-        WRITE_BYTE,
+        DATA,
         WRITE_ACK,
-        READ_BYTE,
         READ_ACK,
-        REPEATED_START,
+        RESTART,
         STOP
-    } state_t;
-    state_t i2c_state;
+    } i2c_status_t;
+    i2c_status_t i2c_status;
 
+    logic i2c_scl_reg;
+    logic i2c_sda_reg;
 
-    // Timming selection based on mode
-    always_comb begin
-        case (i2c_mode)
-            2'b00: begin // Standard-mode (100 kHz)
-                CNT_LOW = CNT_LOW_100K;
-                CNT_HIGH = CNT_HIGH_100K;
-                CNT_MAX = CNT_MAX_100K;
-            end
-            2'b01: begin // Fast-mode (400 kHz)
-                CNT_LOW = CNT_LOW_400K;
-                CNT_HIGH = CNT_HIGH_400K;
-                CNT_MAX = CNT_MAX_400K;
-            end
-            2'b10: begin // Fast-mode Plus (1 MHz)
-                CNT_LOW = CNT_LOW_1M;
-                CNT_HIGH = CNT_HIGH_1M;
-                CNT_MAX = CNT_MAX_1M;
-            end
-            default: begin
-                CNT_LOW = CNT_LOW_100K;
-                CNT_HIGH = CNT_HIGH_100K;
-                CNT_MAX = CNT_MAX_100K;
-            end
-        endcase
-    end
+    logic send_nreceive;
 
-    // I2C clock generation logic
+    logic [CNT_W-1:0] i2c_cnt;
+    logic i2c_cnt_reset;
+    logic i2c_bit_done;
+
+    assign i2c_bit_done = (i2c_cnt == CNT_MAX_100K);
+
     always_ff @(posedge clk or negedge nrst) begin
         if (!nrst) begin
-            i2c_timing_cnt <= 0;
+            i2c_cnt <= 0;
+        end else if (i2c_cnt_reset) begin
+            i2c_cnt <= 0;
         end else begin
-            if (reset_i2c_clk) begin
-                i2c_timing_cnt <= 0;
-            end else if (ena_i2c_clk && i2c_timing_cnt < CNT_MAX) begin
-                i2c_timing_cnt <= i2c_timing_cnt + 1;
+            i2c_cnt <= i2c_cnt + 1;
+        end
+    end
+
+    logic [3:0] data_cnt;
+    logic data_cnt_reset;
+
+    always_ff @(posedge clk or negedge nrst) begin
+        if (!nrst) begin
+            data_cnt <= 0;
+        end else if (data_cnt_reset) begin
+            data_cnt <= 0;
+        end else if (i2c_bit_done) begin
+            data_cnt <= data_cnt + 1;
+        end
+    end
+
+    always_ff @(posedge clk or negedge nrst) begin
+        if (!nrst) begin
+            data_out <= 0;
+        end else begin
+            if (send_nreceive && i2c_status == DATA && i2c_cnt == CNT_LOW_100K) begin
+                data_out <= data_out << 1 | i2c_sda;
             end
         end
     end
-    assign end_i2c_clk = (i2c_timing_cnt == CNT_MAX);
-    assign end_low_i2c_clk = (i2c_timing_cnt == CNT_LOW);
-    assign end_high_i2c_clk = (i2c_timing_cnt == CNT_HIGH);
 
-    // FSM i2c
     always_ff @(posedge clk or negedge nrst) begin
         if (!nrst) begin
-            i2c_state <= IDLE;
-            reset_i2c_clk <= 1;
-            i2c_scl_reg <= 1;
-            i2c_sda_reg <= 1;
-            data_in_reg <= 0;
-            addr_rw_reg <= 0;
-            bit_cnt <= 7;
-            error_ack_reg <= 0;
-            system_idle <= 1;
+            i2c_status <= IDLE;
+            i2c_cnt_reset <= 1;
+            data_cnt_reset <= 1;
+            send_nreceive <= 0;
             new_byte <= 0;
+            system_idle <= 1;
             error_ack <= 0;
-            data_out <= 0;
         end else begin
-            case (i2c_state)
+            new_byte <= 0;
+            case (i2c_status)
                 IDLE: begin
                     system_idle <= 1;
-                    new_byte <= 0;
-                    reset_i2c_clk <= 1;
-                    i2c_scl_reg <= 1;
-                    i2c_sda_reg <= 1;
-                    error_ack <= error_ack_reg;
+                    error_ack <= 0;
+                    i2c_cnt_reset <= 1;
+                    data_cnt_reset <= 1;
                     if (ena) begin
                         system_idle <= 0;
-                        error_ack_reg <= 0;
-                        addr_rw_reg <= addr_rw;
-                        reset_i2c_clk <= 0;
-                        i2c_state <= START;
+                        i2c_status <= START;
                     end
                 end
                 START: begin
-                    i2c_sda_reg <= 0;
-                    i2c_scl_reg <= 1;
-                    if (end_high_i2c_clk) begin
-                        reset_i2c_clk <= 0;
-                        i2c_state <= SEND_ADDR_RW;
+                    i2c_cnt_reset <= 0;
+                    data_cnt_reset <= 1;
+                    if(i2c_cnt == CNT_THD_TSU_STA_100K) begin
+                        i2c_status <= ADDR;
+                        i2c_cnt_reset <= 1;
                     end
                 end
-                REPEATED_START: begin
-                    new_byte <= 0;
-                    // TODO: Implement repeated start condition (SDA goes low while SCL is high)
+                ADDR: begin
+                    data_cnt_reset <= 0;
+                    i2c_cnt_reset <= 0;
+                    if(i2c_bit_done && data_cnt == 6) begin
+                        i2c_status <= R_W;
+                        data_cnt_reset <= 1;
+                        i2c_cnt_reset <= 1;
+                    end
                 end
-                SEND_ADDR_RW: begin
-                    i2c_sda_reg <= addr_rw_reg[bit_cnt];
-                    i2c_scl_reg <= i2c_timing_cnt < CNT_LOW ? 0 : 1;
-                    if (end_i2c_clk) begin
-                        reset_i2c_clk <= 0;
-                        if (bit_cnt == 0) begin
-                            i2c_state <= ADDR_ACK;
-                        end else begin
-                            bit_cnt <= bit_cnt - 1;
-                        end
+                R_W: begin
+                    data_cnt_reset <= 1;
+                    i2c_cnt_reset <= 0;
+                    if(i2c_bit_done) begin
+                        i2c_status <= ADDR_ACK;
+                        i2c_cnt_reset <= 1;
+                        send_nreceive <= addr_rw[0]; // 1 for read, 0 for write
                     end
                 end
                 ADDR_ACK: begin
-                    i2c_sda_reg <= 1;
-                    i2c_scl_reg <= i2c_timing_cnt < CNT_LOW ? 0 : 1;
-                    if (end_low_i2c_clk) begin
-                        data_in_reg <= data_in; // Latch data to be sent
-                        if (i2c_sda) begin      // ACK received (SDA low)
-                            i2c_state <= addr_rw_reg[7] ? READ_BYTE : WRITE_BYTE;
-                        end else begin          // NACK received (SDA high)
-                            i2c_state <= IDLE;
-                            error_ack_reg <= 1;
+                    i2c_cnt_reset <= 0;
+                    data_cnt_reset <= 1;
+                    if(i2c_bit_done) begin
+                        if (i2c_sda) begin
+                            error_ack <= i2c_sda;
+                            i2c_status <= STOP;
+                        end else if (!ena) begin
+                            error_ack <= 0;
+                            i2c_status <= STOP;
+                        end else begin
+                            error_ack <= 0;
+                            i2c_status <= DATA;
                         end
+                        i2c_cnt_reset <= 1;
                     end
                 end
-                WRITE_BYTE: begin
-                    new_byte <= 0;
-                    i2c_sda_reg <= data_in_reg[bit_cnt];
-                    i2c_scl_reg <= i2c_timing_cnt < CNT_LOW ? 0 : 1;
-                    if (end_i2c_clk) begin
-                        reset_i2c_clk <= 0;
-                        if (bit_cnt == 0) begin
-                            i2c_state <= WRITE_ACK;
-                        end else begin
-                            bit_cnt <= bit_cnt - 1;
-                        end
+                DATA: begin
+                    data_cnt_reset <= 0;
+                    i2c_cnt_reset <= 0;
+                    if(i2c_bit_done && data_cnt == 7) begin
+                        i2c_status <= send_nreceive ? READ_ACK : WRITE_ACK;
+                        data_cnt_reset <= 1;
+                        i2c_cnt_reset <= 1;
+                        new_byte <= 1;
                     end
                 end
                 WRITE_ACK: begin
-                    i2c_sda_reg <= 1;
-                    i2c_scl_reg <= i2c_timing_cnt < CNT_LOW ? 0 : 1;
-                    if (end_low_i2c_clk) begin
-                        new_byte <= 1;
-                        if (i2c_sda) begin      // ACK received (SDA low)
-                            if (ena) begin
-                                if (addr_rw == addr_rw_reg) begin
-                                    i2c_state <= WRITE_BYTE;
-                                    data_in_reg <= data_in; // Latch data to be sent
-                                end else begin
-                                    i2c_state <= REPEATED_START;
-                                end
-                            end else begin
-                                i2c_state <= STOP;
-                            end
-                        end else begin          // NACK received (SDA high)
-                            i2c_state <= STOP;
-                            error_ack_reg <= 1;
-                        end
-                    end
-                end
-                READ_BYTE: begin
-                    new_byte <= 0;
-                    i2c_sda_reg <= 1; // Release SDA for reading
-                    i2c_scl_reg <= i2c_timing_cnt < CNT_LOW ? 0 : 1;
-                    if (end_low_i2c_clk) begin
-                        reset_i2c_clk <= 0;
-                        data_out_reg[bit_cnt] <= i2c_sda; // Sample SDA
-                        if (bit_cnt == 0) begin
-                            i2c_state <= READ_ACK;
+                    i2c_cnt_reset <= 0;
+                    data_cnt_reset <= 1;
+                    if(i2c_bit_done) begin
+                        if (i2c_sda) begin
+                            error_ack <= i2c_sda;
+                            i2c_status <= STOP;
+                        end else if (!ena) begin
+                            error_ack <= 0;
+                            i2c_status <= STOP;
                         end else begin
-                            bit_cnt <= bit_cnt - 1;
+                            error_ack <= 0;
+                            i2c_status <= DATA;
                         end
+                        i2c_cnt_reset <= 1;
                     end
                 end
                 READ_ACK: begin
-                    i2c_sda_reg <= !ena; // ACK if more data is expected, otherwise NACK
-                    i2c_scl_reg <= i2c_timing_cnt < CNT_LOW ? 0 : 1;
-                    if (end_i2c_clk) begin
-                        new_byte <= 1;
-                        data_out <= data_out_reg; // Output the received byte
-                        reset_i2c_clk <= 0;
-                        if (ena) begin
-                            i2c_state <= addr_rw == addr_rw_reg ? READ_BYTE : REPEATED_START;
-                        end else begin
-                            i2c_state <= STOP; // No more data, send stop condition
-                        end
+                    i2c_cnt_reset <= 0;
+                    data_cnt_reset <= 1;
+                    if(i2c_bit_done) begin
+                        i2c_status <= ena ? DATA : STOP;
+                        i2c_cnt_reset <= 1;
+                    end
+                end
+                RESTART: begin
+                    i2c_cnt_reset <= 0;
+                    if(i2c_cnt == CNT_THD_TSU_STA_100K) begin
+                        i2c_status <= ADDR;
+                        i2c_cnt_reset <= 1;
                     end
                 end
                 STOP: begin
-                    new_byte <= 0;
-                    i2c_sda_reg <= 0;
-                    i2c_scl_reg <= 1;
-                    if (end_high_i2c_clk) begin
-                        i2c_sda_reg <= 1;
-                        reset_i2c_clk <= 0;
-                        i2c_state <= IDLE;
+                    i2c_cnt_reset <= 0;
+                    if(i2c_cnt == CNT_THD_TSU_TBUF_100K) begin
+                        i2c_status <= IDLE;
+                        i2c_cnt_reset <= 1;
                     end
-                end
-                default: begin
-                    i2c_state <= IDLE;
                 end
             endcase
         end
     end
-    
-    // Clock stretching generation
+
     always_comb begin
-        if (i2c_timing_cnt < CNT_LOW) begin
-            ena_i2c_clk = 1;
-        end else begin
-            if (i2c_scl != 0) begin
-                ena_i2c_clk = 0;
-            end else begin
-                ena_i2c_clk = 1;
+        case (i2c_status)
+            IDLE: begin
+                i2c_scl_reg <= 1;
+                i2c_sda_reg <= 1;
             end
-        end
+            START: begin
+                if (i2c_cnt < CNT_TSU_STA_100K) begin
+                    i2c_scl_reg <= 1;
+                    i2c_sda_reg <= 1;
+                end else begin
+                    i2c_scl_reg <= 1;
+                    i2c_sda_reg <= 0;
+                end
+            end
+            ADDR: begin
+                if (i2c_cnt < CNT_LOW_100K) begin
+                    i2c_scl_reg <= 0;
+                end else begin
+                    i2c_scl_reg <= 1;
+                end
+                i2c_sda_reg <= addr_rw[7-data_cnt]; // Send address bits MSB first
+            end
+            R_W: begin
+                if (i2c_cnt < CNT_LOW_100K) begin
+                    i2c_scl_reg <= 0;
+                end else begin
+                    i2c_scl_reg <= 1;
+                end
+                i2c_sda_reg <= addr_rw[0];
+            end
+            ADDR_ACK,
+            WRITE_ACK: begin
+                if (i2c_cnt < CNT_LOW_100K) begin
+                    i2c_scl_reg <= 0;
+                end else begin
+                    i2c_scl_reg <= 1;
+                end
+                i2c_sda_reg <= 1;
+            end
+            READ_ACK: begin
+                if (i2c_cnt < CNT_LOW_100K) begin
+                    i2c_scl_reg <= 0;
+                end else begin
+                    i2c_scl_reg <= 1;
+                end
+                i2c_sda_reg <= ena ? 0 : 1;
+            end
+            DATA: begin
+                if (i2c_cnt < CNT_LOW_100K) begin
+                    i2c_scl_reg <= 0;
+                end else begin
+                    i2c_scl_reg <= 1;
+                end
+                // If reading, release SDA line (high-impedance)
+                i2c_sda_reg <= send_nreceive ? 1 : data_in[7-data_cnt]; // Send address bits MSB first
+            end
+            RESTART: begin
+                if (i2c_cnt < CNT_TSU_STA_100K) begin
+                    i2c_scl_reg <= 1;
+                    i2c_sda_reg <= 1;
+                end else begin
+                    i2c_scl_reg <= 1;
+                    i2c_sda_reg <= 0;
+                end
+            end
+            STOP: begin
+                if (i2c_cnt < CNT_TSU_STO_100K) begin
+                    i2c_scl_reg <= 1;
+                    i2c_sda_reg <= 0;
+                end else begin
+                    i2c_scl_reg <= 1;
+                    i2c_sda_reg <= 1;
+                end
+            end                
+            default: begin
+                i2c_scl_reg <= 1;
+                i2c_sda_reg <= 1;
+            end
+        endcase
     end
 
-    // Output assignments
+
+    // Pull-up resistors are required on the SCL and SDA lines for proper operation.
     assign i2c_scl = i2c_scl_reg ? 1'bz : 0; // Open-drain output
     assign i2c_sda = i2c_sda_reg ? 1'bz : 0; // Open-drain output
 
