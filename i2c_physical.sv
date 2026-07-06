@@ -235,79 +235,79 @@ module i2c_physical #(
     always_comb begin
         case (i2c_status)
             IDLE: begin
-                i2c_scl_reg <= 1;
-                i2c_sda_reg <= 1;
+                i2c_scl_reg = 1;
+                i2c_sda_reg = 1;
             end
             START: begin
                 if (i2c_cnt < CNT_TSU_STA_100K) begin
-                    i2c_scl_reg <= 1;
-                    i2c_sda_reg <= 1;
+                    i2c_scl_reg = 1;
+                    i2c_sda_reg = 1;
                 end else begin
-                    i2c_scl_reg <= 1;
-                    i2c_sda_reg <= 0;
+                    i2c_scl_reg = 1;
+                    i2c_sda_reg = 0;
                 end
             end
             ADDR: begin
                 if (i2c_cnt < CNT_LOW_100K) begin
-                    i2c_scl_reg <= 0;
+                    i2c_scl_reg = 0;
                 end else begin
-                    i2c_scl_reg <= 1;
+                    i2c_scl_reg = 1;
                 end
-                i2c_sda_reg <= addr_rw[7-data_cnt]; // Send address bits MSB first
+                i2c_sda_reg = addr_rw[7-data_cnt]; // Send address bits MSB first
             end
             R_W: begin
                 if (i2c_cnt < CNT_LOW_100K) begin
-                    i2c_scl_reg <= 0;
+                    i2c_scl_reg = 0;
                 end else begin
-                    i2c_scl_reg <= 1;
+                    i2c_scl_reg = 1;
                 end
-                i2c_sda_reg <= addr_rw[0];
+                i2c_sda_reg = addr_rw[0];
             end
             ADDR_ACK,
             WRITE_ACK: begin
                 if (i2c_cnt < CNT_LOW_100K) begin
-                    i2c_scl_reg <= 0;
+                    i2c_scl_reg = 0;
                 end else begin
-                    i2c_scl_reg <= 1;
+                    i2c_scl_reg = 1;
                 end
-                i2c_sda_reg <= 1;
+                i2c_sda_reg = 1;
             end
             READ_ACK: begin
                 if (i2c_cnt < CNT_LOW_100K) begin
-                    i2c_scl_reg <= 0;
+                    i2c_scl_reg = 0;
                 end else begin
-                    i2c_scl_reg <= 1;
+                    i2c_scl_reg = 1;
                 end
-                i2c_sda_reg <= ena ? 0 : 1;
+                i2c_sda_reg = ena ? 0 : 1;
             end
             DATA: begin
                 if (i2c_cnt < CNT_LOW_100K) begin
-                    i2c_scl_reg <= 0;
+                    i2c_scl_reg = 0;
                 end else begin
-                    i2c_scl_reg <= 1;
+                    i2c_scl_reg = 1;
                 end
                 // If reading, release SDA line (high-impedance)
-                i2c_sda_reg <= send_nreceive ? 1 : data_in[7-data_cnt]; // Send address bits MSB first
+                i2c_sda_reg = send_nreceive ? 1 : data_in[7-data_cnt]; // Send address bits MSB first
             end
             STOP: begin
                 if (i2c_cnt < 1) begin
                     // avoid accidental START condition
-                    i2c_scl_reg <= 0;
-                    i2c_sda_reg <= i2c_sda_ff;
+                    i2c_scl_reg = 0;
+                    i2c_sda_reg = i2c_sda_ff;
                 end else if (i2c_cnt < CNT_LOW_100K) begin
-                    i2c_scl_reg <= 0;
-                    i2c_sda_reg <= 0;
+                    i2c_scl_reg = 0;
+                    i2c_sda_reg = 0;
                 end else if (i2c_cnt < CNT_TSU_STO_100K + CNT_LOW_100K) begin
-                    i2c_scl_reg <= 1;
-                    i2c_sda_reg <= 0;
+                    i2c_scl_reg = 1;
+                    i2c_sda_reg = 0;
                 end else begin
-                    i2c_sda_reg <= 1;
-                    i2c_scl_reg <= 1;
+                    i2c_sda_reg = 1;
+                    i2c_scl_reg = 1;
                 end
             end                
             default: begin
-                i2c_scl_reg <= 1;
-                i2c_sda_reg <= 1;
+                i2c_scl_reg = 1;
+                i2c_sda_reg = 1;
             end
         endcase
     end
