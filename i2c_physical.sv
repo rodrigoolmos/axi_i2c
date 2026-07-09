@@ -1,7 +1,6 @@
 // MODES
 // Standard-mode (100 kHz)
 // 7 bit addressing
-// START / Repeated START
 
 
 module i2c_physical #(
@@ -26,8 +25,9 @@ module i2c_physical #(
     // =====================
     // Standard-mode (100 kHz)
     // =====================
+    parameter unsigned CNT_PERIOD_100K = CLOCK_FREQ_HZ / 100_000; // 10.0 us
     parameter unsigned CNT_LOW_100K  = (CLOCK_FREQ_HZ * 64'd47) / 64'd10_000_000; // 4.7 us
-    parameter unsigned CNT_HIGH_100K = (CLOCK_FREQ_HZ * 64'd40) / 64'd10_000_000; // 4.0 us
+    parameter unsigned CNT_HIGH_100K = CNT_PERIOD_100K - CNT_LOW_100K; // 5.3 us
     
     parameter unsigned CNT_THD_STA_100K = (CLOCK_FREQ_HZ * 64'd40) / 64'd10_000_000; // 4.0 us  (tHD;STA)
     parameter unsigned CNT_TSU_STA_100K = (CLOCK_FREQ_HZ * 64'd47) / 64'd10_000_000; // 4.7 us  (tSU;STA)
@@ -36,7 +36,9 @@ module i2c_physical #(
     parameter unsigned CNT_THD_TSU_STA_100K = CNT_THD_STA_100K + CNT_TSU_STA_100K; // 8.7 us
     parameter unsigned CNT_THD_TSU_TBUF_100K = CNT_TSU_STO_100K + CNT_TBUF_100K; // 8.7 us
 
-    parameter unsigned CNT_MAX_100K = CNT_LOW_100K + CNT_HIGH_100K + CNT_TSU_STO_100K;
+    parameter unsigned CNT_BIT_100K = CNT_LOW_100K + CNT_HIGH_100K;
+    parameter unsigned CNT_STOP_100K = CNT_LOW_100K + CNT_TSU_STO_100K + CNT_TBUF_100K;
+    parameter unsigned CNT_MAX_100K = (CNT_STOP_100K > CNT_THD_TSU_STA_100K) ? CNT_STOP_100K : CNT_THD_TSU_STA_100K;
     
     parameter unsigned CNT_W = $clog2(CNT_MAX_100K + 1);
 
@@ -55,28 +57,49 @@ module i2c_physical #(
 
     logic [3:0] data_cnt;
     logic data_cnt_reset;
+    logic data_cnt_inc;
 
     logic i2c_scl_reg;
     logic i2c_sda_reg;
+    logic i2c_scl_ff;
     logic i2c_sda_ff;
 
     logic posedge_scl;
-    logic negedge_scl;
-    logic scl_reg_ff;
+    logic scl_stretched;
 
     logic send_nreceive;
+    logic read_ack_sda_reg;
+
+    logic [7:0] addr_rw_reg;
+    logic [7:0] data_in_reg;
 
     logic [CNT_W-1:0] i2c_cnt;
     logic i2c_cnt_reset;
     logic i2c_bit_done;
+    logic i2c_start_done;
+    logic i2c_stop_done;
+    logic i2c_cnt_done;
+    logic i2c_bit_state;
 
-    assign i2c_bit_done = (i2c_cnt == CNT_MAX_100K);
+    assign i2c_bit_done = (i2c_cnt == CNT_BIT_100K);
+    assign i2c_start_done = (i2c_cnt == CNT_THD_TSU_STA_100K);
+    assign i2c_stop_done = (i2c_cnt == CNT_STOP_100K);
+    assign i2c_bit_state = (i2c_status == ADDR)     ||
+                           (i2c_status == R_W)      ||
+                           (i2c_status == ADDR_ACK) ||
+                           (i2c_status == DATA)     ||
+                           (i2c_status == WRITE_ACK)||
+                           (i2c_status == READ_ACK);
+    assign i2c_cnt_done = (i2c_bit_state && i2c_bit_done) ||
+                          (i2c_status == START && i2c_start_done) ||
+                          (i2c_status == STOP && i2c_stop_done);
+    assign scl_stretched = i2c_scl_reg && !i2c_scl;
 
     always_ff @(posedge clk or negedge nrst) begin
         if (!nrst) begin
-            scl_reg_ff <= 1;
+            i2c_scl_ff <= 1;
         end else begin
-            scl_reg_ff <= i2c_scl_reg;
+            i2c_scl_ff <= i2c_scl;
         end
     end
 
@@ -84,18 +107,19 @@ module i2c_physical #(
         if (!nrst) begin
             i2c_sda_ff <= 1;
         end else begin
-            i2c_sda_ff <= i2c_sda_reg;
+            i2c_sda_ff <= i2c_sda;
         end
     end
 
-    assign posedge_scl = !scl_reg_ff && i2c_scl_reg;
-    assign negedge_scl = scl_reg_ff && !i2c_scl_reg;
+    assign posedge_scl = !i2c_scl_ff && i2c_scl;
 
     always_ff @(posedge clk or negedge nrst) begin
         if (!nrst) begin
             i2c_cnt <= 0;
-        end else if (i2c_cnt_reset || i2c_bit_done) begin
+        end else if (i2c_cnt_reset || i2c_cnt_done) begin
             i2c_cnt <= 0;
+        end else if (scl_stretched) begin
+            i2c_cnt <= i2c_cnt;
         end else begin
             i2c_cnt <= i2c_cnt + 1;
         end
@@ -106,8 +130,19 @@ module i2c_physical #(
             data_cnt <= 0;
         end else if (data_cnt_reset) begin
             data_cnt <= 0;
-        end else if (negedge_scl) begin
+        end else if (data_cnt_inc) begin
             data_cnt <= data_cnt + 1;
+        end
+    end
+
+    always_ff @(posedge clk or negedge nrst) begin
+        if (!nrst) begin
+            data_cnt_inc <= 0;
+        end else if (data_cnt_reset) begin
+            data_cnt_inc <= 0;
+        end else begin
+            data_cnt_inc <= (i2c_bit_done && i2c_status == ADDR && data_cnt < 6) ||
+                            (i2c_bit_done && i2c_status == DATA && data_cnt < 7);
         end
     end
 
@@ -123,10 +158,20 @@ module i2c_physical #(
 
     always_ff @(posedge clk or negedge nrst) begin
         if (!nrst) begin
+            read_ack_sda_reg <= 1;
+        end else if (i2c_status == READ_ACK && i2c_cnt < CNT_LOW_100K) begin
+            read_ack_sda_reg <= ena ? 0 : 1;
+        end
+    end
+
+    always_ff @(posedge clk or negedge nrst) begin
+        if (!nrst) begin
             i2c_status <= IDLE;
             i2c_cnt_reset <= 1;
             data_cnt_reset <= 1;
             send_nreceive <= 0;
+            addr_rw_reg <= 0;
+            data_in_reg <= 0;
             new_byte <= 0;
             system_idle <= 1;
             error_ack <= 0;
@@ -140,13 +185,14 @@ module i2c_physical #(
                     data_cnt_reset <= 1;
                     if (ena) begin
                         system_idle <= 0;
+                        addr_rw_reg <= addr_rw;
                         i2c_status <= START;
                     end
                 end
                 START: begin
                     i2c_cnt_reset <= 0;
                     data_cnt_reset <= 1;
-                    if(i2c_cnt == CNT_THD_TSU_STA_100K) begin
+                    if(i2c_start_done) begin
                         i2c_status <= ADDR;
                         i2c_cnt_reset <= 1;
                     end
@@ -166,7 +212,7 @@ module i2c_physical #(
                     if(i2c_bit_done) begin
                         i2c_status <= ADDR_ACK;
                         i2c_cnt_reset <= 1;
-                        send_nreceive <= addr_rw[0]; // 1 for read, 0 for write
+                        send_nreceive <= addr_rw_reg[0]; // 1 for read, 0 for write
                     end
                 end
                 ADDR_ACK: begin
@@ -181,6 +227,9 @@ module i2c_physical #(
                         end else if (!ena) begin
                             i2c_status <= STOP;
                         end else begin
+                            if (!send_nreceive) begin
+                                data_in_reg <= data_in;
+                            end
                             i2c_status <= DATA;
                         end
                         i2c_cnt_reset <= 1;
@@ -208,6 +257,9 @@ module i2c_physical #(
                         end else if (!ena) begin
                             i2c_status <= STOP;
                         end else begin
+                            if (!send_nreceive) begin
+                                data_in_reg <= data_in;
+                            end
                             i2c_status <= DATA;
                         end
                         i2c_cnt_reset <= 1;
@@ -223,7 +275,7 @@ module i2c_physical #(
                 end
                 STOP: begin
                     i2c_cnt_reset <= 0;
-                    if(i2c_cnt == CNT_THD_TSU_TBUF_100K + CNT_TSU_STO_100K) begin
+                    if(i2c_stop_done) begin
                         i2c_status <= IDLE;
                         i2c_cnt_reset <= 1;
                     end
@@ -253,7 +305,7 @@ module i2c_physical #(
                 end else begin
                     i2c_scl_reg = 1;
                 end
-                i2c_sda_reg = addr_rw[7-data_cnt]; // Send address bits MSB first
+                i2c_sda_reg = addr_rw_reg[7-data_cnt]; // Send address bits MSB first
             end
             R_W: begin
                 if (i2c_cnt < CNT_LOW_100K) begin
@@ -261,7 +313,7 @@ module i2c_physical #(
                 end else begin
                     i2c_scl_reg = 1;
                 end
-                i2c_sda_reg = addr_rw[0];
+                i2c_sda_reg = addr_rw_reg[0];
             end
             ADDR_ACK,
             WRITE_ACK: begin
@@ -278,7 +330,7 @@ module i2c_physical #(
                 end else begin
                     i2c_scl_reg = 1;
                 end
-                i2c_sda_reg = ena ? 0 : 1;
+                i2c_sda_reg = read_ack_sda_reg;
             end
             DATA: begin
                 if (i2c_cnt < CNT_LOW_100K) begin
@@ -287,7 +339,7 @@ module i2c_physical #(
                     i2c_scl_reg = 1;
                 end
                 // If reading, release SDA line (high-impedance)
-                i2c_sda_reg = send_nreceive ? 1 : data_in[7-data_cnt]; // Send address bits MSB first
+                i2c_sda_reg = send_nreceive ? 1 : data_in_reg[7-data_cnt]; // Send data bits MSB first
             end
             STOP: begin
                 if (i2c_cnt < 1) begin
